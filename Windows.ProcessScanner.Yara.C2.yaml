@@ -1,0 +1,80 @@
+name: Windows.ProcessScanner.Yara.C2
+author: PoundofAntonio, original by Dennis Yarizadeh + Chris Jones - Check Point Incident Response Team
+description: |
+    Instructions: 
+    
+    Upload a yara signature file (signature file must be named yara-rules-core-C2-RAT.yar) and yara64.exe in a single zip file called yara.zip.
+    This artifact is an alternative way to scan processes, or recursively scan the C:\ with a yara file containing multiple yara rules, utilizing the official yara tool. 
+    
+    This artifact will drop the yara.zip file onto the client in a temporary directory, unzip the binary and yara file, 
+    and then iterate through every running process or file on disk. Finally, it will delete the temporary directory.  
+    
+    By Default, the yaraexecutable already hosted inside the velociraptor server. So, just need to host once only until a new update.
+    
+tools:
+  - name: yaraexecutable
+    url: https://github.com/PoundofAntonio/yara-forge-c2-rat-process/releases/download/v1.0/yara-rules-core-C2-RAT.zip
+    
+parameters:
+ - name: ScanType
+   description: "Are we scanning Processes?"
+   type: bool
+   default: Y
+   
+ - name: ThreadLimit
+   description: "How many threads to utilise?"
+   type: string
+   default: "32"
+
+sources:
+  - query: |
+
+        LET processes = SELECT * FROM pslist()
+        
+        LET TmpDir <= tempdir()
+
+        LET YaraExePath <= SELECT FullPath FROM Artifact.Generic.Utils.FetchBinary(ToolName="yaraexecutable", IsExecutable=FALSE, TemporaryOnly=TRUE)
+
+        LET FetchYara <= SELECT * FROM unzip(filename=YaraExePath.FullPath, output_directory=TmpDir)
+
+        -- Set EXE
+        LET YaraExe <= TmpDir + '\\yara64.exe'
+
+        -- Set Yara file
+        Let YaraFile <= TmpDir + '\\yara-rules-core-C2-RAT.yar'
+        
+        -- Scan with Yara File
+        LET Execute <= SELECT * FROM if (condition=ScanType, then={SELECT * FROM  foreach(row=processes,
+        query={
+            SELECT Name, Pid, Ppid, Stdout FROM execve(argv=[YaraExe, YaraFile, Pid, "-p", ThreadLimit])
+        })},
+        
+        else = { 
+        SELECT Stdout FROM execve(argv=[YaraExe, YaraFile, "-r",  "C:\\", "-g", "-p", ThreadLimit])})
+        
+        -- Read Data
+        LET Query = SELECT Stdout FROM Execute
+        
+        LET ParseLines = SELECT * FROM parse_lines(filename=Query.Stdout, accessor="data")
+        
+        LET YaraGrok = "%{WORD:category} %{NUMBER:pid}"
+        
+        LET ParsedData = SELECT grok(grok=YaraGrok, data=Line) AS Parsed FROM ParseLines
+        LET ResultData = SELECT Parsed.category AS DetectedPayload, Parsed.pid AS Pid FROM ParsedData
+        
+        -- Enrich the parsed Yara output with process information
+        LET pslistPIDLookup <= memoize(
+                                      key="Pid",
+                                      query={
+                                        SELECT str(str=Pid) AS Pid, Name, Ppid, Username, CommandLine, TokenIsElevated, CreateTime
+                                        FROM processes
+                                      }, period=10000)
+
+        SELECT DetectedPayload, Pid, get(item=pslistPIDLookup, field=str(str=Pid)).Name AS ProcessName,
+                                     get(item=pslistPIDLookup, field=str(str=Pid)).Ppid AS Ppid,
+                                     get(item=pslistPIDLookup, field=str(str=Pid)).Username AS Username,
+                                     get(item=pslistPIDLookup, field=str(str=Pid)).CommandLine AS CommandLine,
+                                     get(item=pslistPIDLookup, field=str(str=Pid)).TokenIsElevated AS TokenIsElevated,
+                                     get(item=pslistPIDLookup, field=str(str=Pid)).CreateTime AS CreateTime
+        FROM ResultData
+

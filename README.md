@@ -58,9 +58,12 @@ $ python3 yara_forge_c2_rat.py
 ```
 
 ## How to use - ruleset
-using VirusTotal's yara 
+### using VirusTotal's yara 
 
 `yara64.exe $yarafile $pid -w -p $threads`
+
+### using velociraptor artifact
+See [Windows.ProcessScanner.Yara.C2](./Windows.ProcessScanner.Yara.C2.yaml)
 
 ## Yara64 Statistic (`yara64.exe -S`)
 ```
